@@ -1,19 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Bridges each photo to AppKit's drag and drop, so it can be dragged into
-/// any app as a real file. Each destination means one thing:
-///
-/// - An app gets a copy, and the photo stays on the line.
-/// - A folder or the Desktop keeps the file, and the photo leaves the line.
-/// - The Trash discards it.
-/// - Nowhere that accepts it: the photo flies back to the line.
-///
-/// Click copies, double click opens, press and hold opens Markup, the corner
-/// cross discards.
+/// Native copy-only drag source shared by cards and the large hover preview.
 struct GrabArea: NSViewRepresentable {
     let item: Pegged
     let line: Line
+    var isPreview = false
 
     func makeNSView(context: Context) -> GrabView {
         let view = GrabView()
@@ -28,20 +20,30 @@ struct GrabArea: NSViewRepresentable {
     private func configure(_ view: GrabView) {
         let id = item.id
         let line = line
-        let isRecording = item.isRecording
         view.url = item.url
         view.dragImage = item.thumb
+        view.canDiscard = item.sourceID == nil && !isPreview
+        view.onHover = { hovering, frame in
+            if isPreview {
+                if hovering { HoverPreview.shared.cancelClose() } else { HoverPreview.shared.scheduleClose() }
+            } else if hovering {
+                HoverPreview.shared.schedule(item: item, line: line, anchor: frame)
+            } else { HoverPreview.shared.scheduleClose() }
+        }
+        view.onMouseDown = { HoverPreview.shared.cancelPending() }
         view.onClick = { line.copy(id) }
         view.onDoubleClick = { line.open(id) }
-        view.onDragStart = { line.draggingID = id }
+        view.onDragStart = {
+            line.draggingID = id
+            if !isPreview { HoverPreview.shared.close() }
+        }
         view.onDragEnd = {
             line.draggingID = nil
-            // Moved into a folder: it is saved where you wanted it.
-            line.prune()
+            HoverPreview.shared.close()
+            line.refreshSource()
         }
-        view.onTrash = { line.trash(id) }
         view.onDiscard = { line.discard(id) }
-        view.onLongPress = { line.markup(id) }
+        view.onLongPress = { line.quickLook(id) }
         view.onForceClick = { line.quickLook(id) }
         view.onPressChange = { pressed in line.pressedID = pressed ? id : nil }
         view.menuProvider = {
@@ -51,27 +53,12 @@ struct GrabArea: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(L("Copy")) { line.copy(id) })
             menu.addItem(ClosureMenuItem(L("Open")) { line.open(id) })
             menu.addItem(ClosureMenuItem(L("Quick Look")) { line.quickLook(id) })
-            if !isRecording {
-                menu.addItem(ClosureMenuItem(L("Markup")) { line.markup(id) })
-            }
+            menu.addItem(ClosureMenuItem("复制绝对路径") { line.copyPath(id) })
             menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
-            let inInbox = line.isInInbox(id)
-            if inInbox {
-                menu.addItem(ClosureMenuItem(L("Save to Desktop")) { line.saveToDesktop(id) })
+            if item.sourceID == nil {
+                menu.addItem(.separator())
+                menu.addItem(ClosureMenuItem("移除历史（保留原件）") { line.discard(id) })
             }
-            menu.addItem(.separator())
-            if inInbox {
-                menu.addItem(ClosureMenuItem(L("Discard")) { line.discard(id) })
-            } else {
-                menu.addItem(ClosureMenuItem(L("Take down")) { line.discard(id) })
-                menu.addItem(ClosureMenuItem(L("Move to Trash")) { line.trash(id) })
-            }
-            let left = ClosureMenuItem(L("Take down everything to the left")) { line.takeDown(id, toTheLeft: true) }
-            left.isEnabled = !line.neighbours(of: id, toTheLeft: true).isEmpty
-            menu.addItem(left)
-            let right = ClosureMenuItem(L("Take down everything to the right")) { line.takeDown(id, toTheLeft: false) }
-            right.isEnabled = !line.neighbours(of: id, toTheLeft: false).isEmpty
-            menu.addItem(right)
             return menu
         }
     }
@@ -88,7 +75,9 @@ final class GrabView: NSView, NSDraggingSource {
     var onDoubleClick: () -> Void = {}
     var onDragStart: () -> Void = {}
     var onDragEnd: () -> Void = {}
-    var onTrash: () -> Void = {}
+    var canDiscard = false
+    var onHover: (Bool, CGRect) -> Void = { _, _ in }
+    var onMouseDown: () -> Void = {}
     var onDiscard: () -> Void = {}
     var onLongPress: () -> Void = {}
     var onForceClick: () -> Void = {}
@@ -102,6 +91,22 @@ final class GrabView: NSView, NSDraggingSource {
     /// A click copies only once it is clear it is not the first half of a
     /// double click, which opens the photo and must leave the clipboard alone.
     private var clickTimer: Timer?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard !Self.isDragging, let window else { return }
+        onHover(true, window.convertToScreen(convert(bounds, to: nil)))
+    }
+
+    override func mouseExited(with event: NSEvent) { onHover(false, .zero) }
 
     /// How long you hold before Markup opens. Long enough not to fire on a
     /// slow click, short enough to feel deliberate.
@@ -121,11 +126,12 @@ final class GrabView: NSView, NSDraggingSource {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onMouseDown()
         if event.clickCount > 1 {
             clickTimer?.invalidate()
             clickTimer = nil
         }
-        if isInCross(event) {
+        if canDiscard && isInCross(event) {
             downPoint = nil
             onDiscard()
             return
@@ -171,14 +177,15 @@ final class GrabView: NSView, NSDraggingSource {
         guard hypot(p.x - start.x, p.y - start.y) > 4, !didLongPress else { return }
         startedDrag = true
         endPress()
+        clickTimer?.invalidate()
+        Self.isDragging = true
+        onDragStart()
 
         let item = NSDraggingItem(pasteboardWriter: url as NSURL)
         item.setDraggingFrame(imageFrame(), contents: dragImage)
         let session = beginDraggingSession(with: [item], event: event, source: self)
         // Released where nothing accepts it: it flies back to the line.
         session.animatesToStartingPositionsOnCancelOrFail = true
-        GrabView.isDragging = true
-        onDragStart()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -205,6 +212,7 @@ final class GrabView: NSView, NSDraggingSource {
     override func rightMouseDown(with event: NSEvent) {
         // The menu runs until it closes, and the line stays down meanwhile.
         GrabView.isShowingMenu = true
+        HoverPreview.shared.cancelPending()
         NSMenu.popUpContextMenu(menuProvider(), with: event, for: self)
         GrabView.isShowingMenu = false
     }
@@ -213,29 +221,18 @@ final class GrabView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        // Apps pick copy. Finder picks move, so a folder or the Desktop keeps
-        // the file. Delete is what lets the Dock's Trash accept it.
-        context == .outsideApplication ? [.copy, .move, .delete] : []
+        .copy
     }
+
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         GrabView.isDragging = false
         startedDrag = false
         downPoint = nil
         log.notice("Drag ended with operation \(operation.rawValue, privacy: .public)")
-        // Dropped on the Trash: macOS only tells us, we move the file.
-        if operation.contains(.delete) {
-            onDragEnd()
-            onTrash()
-            return
-        }
+        // A destination's move/delete result never authorizes deleting the source.
         onDragEnd()
-        // Finder finishes a move a moment later. Check again then, so a photo
-        // saved into a folder leaves the line.
-        if operation.contains(.move) {
-            let done = onDragEnd
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
-        }
     }
 
     /// The drag preview keeps the photo's aspect ratio inside the card.

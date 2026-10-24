@@ -17,14 +17,14 @@ enum Layout {
     }
 
     static var size: Size {
-        get { Size(rawValue: UserDefaults.standard.string(forKey: "lineSize") ?? "") ?? .medium }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "lineSize") }
+        get { Size(rawValue: AppSettings.defaults.string(forKey: "lineSize") ?? "") ?? .medium }
+        set { AppSettings.defaults.set(newValue.rawValue, forKey: "lineSize") }
     }
 
     static var photoMaxHeight: CGFloat { (104 * size.scale).rounded() }
     static var cardWidth: CGFloat { (150 * size.scale).rounded() }
     static var spacing: CGFloat { cardWidth + 24 }
-    static var panelHeight: CGFloat { photoMaxHeight + 106 }
+    static var panelHeight: CGFloat { photoMaxHeight + 145 }
     static let ropeTop: CGFloat = 10
     static let pinAbove: CGFloat = 9.5
 
@@ -43,9 +43,9 @@ enum Layout {
     /// `scroll` brings older ones in from the left. Otherwise (a line hung
     /// on a wider screen) they move closer together so none is past the edge.
     static func x(index: Int, count: Int, width: CGFloat, visible: Int, scroll: CGFloat) -> CGFloat {
-        if Line.keepOnLine != nil && count > visible {
-            let newest = width / 2 + CGFloat(visible - 1) * spacing / 2
-            return newest - CGFloat(count - 1 - index) * spacing + scroll
+        if count > visible {
+            let first = width / 2 - CGFloat(visible - 1) * spacing / 2
+            return first + CGFloat(index) * spacing - scroll
         }
         let gaps = CGFloat(max(count - 1, 0))
         let step = gaps > 0 ? min(spacing, max(0, width - 200) / gaps) : spacing
@@ -55,6 +55,8 @@ enum Layout {
 
 struct LineView: View {
     @ObservedObject var line: Line
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let toolbarID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     var body: some View {
         GeometryReader { geo in
@@ -63,7 +65,7 @@ struct LineView: View {
                 Rope(width: width)
 
                 if line.items.isEmpty {
-                    Hint()
+                    Hint(message: line.loading ? "正在读取目录…" : line.currentFolder == nil ? "添加文件夹来源，或开启图片记录" : "这个目录暂时没有可显示的项目")
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
                 }
@@ -78,13 +80,20 @@ struct LineView: View {
                         .opacity(min(1, max(0, min(x, width - x) / 90)))
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
+
+                SourceToolbar(line: line)
+                    .fixedSize()
+                    .background(GeometryReader { geometry in
+                        Color.clear.preference(key: HitRectsKey.self, value: [toolbarID: geometry.frame(in: .global)])
+                    })
+                    .position(x: max(240, width - 300), y: Layout.panelHeight - 27)
             }
-            .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
+            .animation(reduceMotion ? nil : .spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
             .animation(.easeInOut(duration: 0.3), value: line.items.isEmpty)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.
             .offset(y: line.revealed ? 0 : -(Layout.panelHeight + 12))
-            .animation(line.revealed ? .spring(response: 0.42, dampingFraction: 0.82)
+            .animation(reduceMotion ? nil : line.revealed ? .spring(response: 0.42, dampingFraction: 0.82)
                                      : .easeIn(duration: 0.22), value: line.revealed)
         }
         .onPreferenceChange(HitRectsKey.self) { rects in
@@ -94,8 +103,9 @@ struct LineView: View {
 }
 
 private struct Hint: View {
+    let message: String
     var body: some View {
-        Text(L("Take a screenshot and it will hang here"))
+        Text(message)
             .font(.system(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)

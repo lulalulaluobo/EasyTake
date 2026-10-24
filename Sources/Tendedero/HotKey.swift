@@ -21,7 +21,7 @@ final class HotKey {
             }, 1, &spec, nil, nil)
             HotKey.handlerInstalled = true
         }
-        let id = EventHotKeyID(signature: OSType(0x5445_4E44), id: 1) // "TEND"
+        let id = EventHotKeyID(signature: OSType(0x5355_4951), id: 1) // "SUIQ"
         let status = RegisterEventHotKey(UInt32(shortcut.keyCode), UInt32(shortcut.carbonModifiers), id,
                                          GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, ref != nil else { return nil }
@@ -39,20 +39,20 @@ struct Shortcut: Equatable {
     /// The key as typed, for the menu: "t", " ", "1".
     var key: String
 
-    static let standard = Shortcut(keyCode: kVK_ANSI_T, modifiers: [.control, .option], key: "t")
+    static let standard = Shortcut(keyCode: kVK_F2, modifiers: [], key: "F2")
 
     private static let defaultsKey = "shortcut"
 
     /// The user's choice. Nil means no shortcut at all.
     static var current: Shortcut? {
         get {
-            guard let saved = UserDefaults.standard.dictionary(forKey: defaultsKey) else { return standard }
+            guard let saved = AppSettings.defaults.dictionary(forKey: defaultsKey) else { return standard }
             guard let code = saved["keyCode"] as? Int, let flags = saved["modifiers"] as? UInt,
                   let key = saved["key"] as? String else { return nil }
             return Shortcut(keyCode: code, modifiers: NSEvent.ModifierFlags(rawValue: flags), key: key)
         }
         set {
-            UserDefaults.standard.set(newValue.map {
+            AppSettings.defaults.set(newValue.map {
                 ["keyCode": $0.keyCode, "modifiers": $0.modifiers.rawValue, "key": $0.key] as [String: Any]
             } ?? [:], forKey: defaultsKey)
         }
@@ -62,9 +62,13 @@ struct Shortcut: Equatable {
     /// Command, Control or Option, so typing alone never triggers it.
     init?(event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        guard !flags.intersection([.command, .control, .option]).isEmpty,
-              let key = event.charactersIgnoringModifiers?.lowercased(), !key.isEmpty else { return nil }
-        self.init(keyCode: Int(event.keyCode), modifiers: flags, key: key)
+        let functionCodes = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12]
+        if let index = functionCodes.firstIndex(of: Int(event.keyCode)) {
+            self.init(keyCode: Int(event.keyCode), modifiers: flags, key: "F\(index + 1)")
+        } else {
+            guard let key = event.charactersIgnoringModifiers?.lowercased(), !key.isEmpty else { return nil }
+            self.init(keyCode: Int(event.keyCode), modifiers: flags, key: key)
+        }
     }
 
     init(keyCode: Int, modifiers: NSEvent.ModifierFlags, key: String) {

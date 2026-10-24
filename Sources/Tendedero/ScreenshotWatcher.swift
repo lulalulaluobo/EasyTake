@@ -37,7 +37,6 @@ final class ScreenshotWatcher {
         self.onChange = onChange
         self.folder = folder ?? Self.screenshotFolder()
         onlyTaggedScreenshots = !anyImage
-            && self.folder.standardizedFileURL.path == Self.desktop.standardizedFileURL.path
         acceptsRecordings = self.folder.standardizedFileURL.path == Inbox.folder.standardizedFileURL.path
     }
 
@@ -88,7 +87,7 @@ final class ScreenshotWatcher {
             return
         }
         guard fd >= 0 else {
-            NSLog("Tendedero: cannot watch \(folder.path)")
+            NSLog("随取：无法监听截图目录 \(folder.path)")
             return
         }
         let src = DispatchSource.makeFileSystemObjectSource(

@@ -16,8 +16,8 @@ enum FullScreen {
     /// stay within reach while you work in one. Off unless turned on: a video
     /// or a presentation should not get a clothesline across the top.
     static var showLineOver: Bool {
-        get { UserDefaults.standard.bool(forKey: "showOverFullScreen") }
-        set { UserDefaults.standard.set(newValue, forKey: "showOverFullScreen") }
+        get { AppSettings.defaults.bool(forKey: "showOverFullScreen") }
+        set { AppSettings.defaults.set(newValue, forKey: "showOverFullScreen") }
     }
 
     /// True when the line should keep away from the given screen.

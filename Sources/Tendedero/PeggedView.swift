@@ -9,6 +9,7 @@ struct PeggedView: View {
     @State private var swing: Double = 0
     @State private var arrived = false
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var copied: Bool { line.copiedID == item.id }
     private var dragging: Bool { line.draggingID == item.id }
@@ -20,7 +21,7 @@ struct PeggedView: View {
                 .zIndex(1)
             card
         }
-        .rotationEffect(.degrees(swing + item.tilt), anchor: .top)
+        .rotationEffect(.degrees(reduceMotion ? 0 : swing + item.tilt), anchor: .top)
         .offset(y: arrived ? 0 : -46)
         // The fall itself is drawn over the whole screen by CaptureFlight, so
         // the card here just steps aside at once.
@@ -51,12 +52,28 @@ struct PeggedView: View {
     /// Distance from the top of the hanging view (the clip) to the card.
     static let cardOffsetBelowTop: CGFloat = 26 - 12
 
-    private var photoSize: CGSize { Self.photoSize(for: item.thumb.size) }
+    private var photoSize: CGSize {
+        item.kind == .image || item.kind == .video ? Self.photoSize(for: item.thumb.size)
+            : CGSize(width: Layout.cardWidth - 14, height: Layout.photoMaxHeight)
+    }
+
+    @ViewBuilder private var cardContents: some View {
+        if item.kind == .image || item.kind == .video {
+            Image(nsImage: item.thumb).resizable().interpolation(.high)
+        } else {
+            VStack(spacing: 5) {
+                Image(nsImage: item.thumb).resizable().scaledToFit().frame(width: 32, height: 32)
+                Text(item.url.lastPathComponent).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                Label(item.kind.title, systemImage: item.kind.symbol).font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(item.kind.tint)
+        }
+    }
 
     private var card: some View {
-        Image(nsImage: item.thumb)
-            .resizable()
-            .interpolation(.high)
+        cardContents
             .frame(width: photoSize.width, height: photoSize.height)
             // Concentric corners: the photo's radius is the frame's minus the
             // inset, the way macOS rounds nested shapes.
@@ -88,17 +105,19 @@ struct PeggedView: View {
                 // Drawn here, clicked through GrabView, which sits on top. A
                 // cross sends a file in Tendedero's folder to the Trash; for a
                 // file anywhere else it only hides it from the line.
-                Image(systemName: line.isInInbox(item.id) ? "xmark" : "eye.slash")
+                Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.primary)
                     .frame(width: 20, height: 20)
                     .glassFrame(circle: true)
                     .padding(3)
-                    .opacity(hovering && !dragging ? 1 : 0)
+                    .opacity(hovering && !dragging && item.sourceID == nil ? 1 : 0)
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
             }
             .overlay(GrabArea(item: item, line: line))
+            .help(item.url.lastPathComponent)
+            .accessibilityLabel("\(item.kind.title)：\(item.url.lastPathComponent)")
             .overlay(alignment: .bottom) {
                 if copied {
                     Label(L("Copied"), systemImage: "checkmark")
@@ -125,6 +144,7 @@ struct PeggedView: View {
     }
 
     private func arrive() {
+        if reduceMotion { arrived = true; return }
         // A capture that flew in is already in place; the flight did the arriving.
         if item.flying {
             arrived = true
@@ -148,9 +168,22 @@ struct PeggedView: View {
     }
 
     private func nudge(_ degrees: Double) {
+        guard !reduceMotion else { return }
         withAnimation(.easeOut(duration: 0.3)) { swing = degrees }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             withAnimation(.interpolatingSpring(stiffness: 38, damping: 2.4)) { swing = 0 }
+        }
+    }
+}
+
+extension FileKind {
+    var tint: Color {
+        switch self {
+        case .image: return Color(red: 0.83, green: 0.92, blue: 0.98)
+        case .video: return Color(red: 0.91, green: 0.86, blue: 0.98)
+        case .text: return Color(red: 0.99, green: 0.97, blue: 0.91)
+        case .file: return Color(red: 0.88, green: 0.93, blue: 0.89)
+        case .folder: return Color(red: 0.98, green: 0.92, blue: 0.80)
         }
     }
 }
