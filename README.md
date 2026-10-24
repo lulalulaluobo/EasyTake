@@ -8,6 +8,8 @@ EasyTake 是基于 **[Tendedero](https://github.com/alejandrobujan/tendedero)** 
 
 当前版本：**0.1.4 · 开发预览版**。支持 macOS 14 及以上，构建产物包含 Apple silicon 与 Intel 两种架构。
 
+[下载 DMG](https://github.com/lulalulaluobo/EasyTake/releases/download/v0.1.4/EasyTake-0.1.4.dmg) · [版本说明](https://github.com/lulalulaluobo/EasyTake/releases/tag/v0.1.4)
+
 ![EasyTake 挂绳展示图片卡片与来源工具条](docs/screenshots/rope-overview.png)
 
 ## 在参考项目上增加了什么
