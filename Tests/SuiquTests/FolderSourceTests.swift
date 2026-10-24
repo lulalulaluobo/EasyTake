@@ -54,9 +54,16 @@ final class FolderSourceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file), "keep")
     }
 
-    @MainActor func testDragOnlyOffersCopyEvenIfDestinationReportsDelete() {
-        let view = GrabView()
-        // The operation mask is independent of session and context; nil is accepted by the ObjC bridge.
-        XCTAssertTrue(view.ignoreModifierKeys(for: NSDraggingSession()))
+    func testFilterRunsBeforeSelectingTwentyNewestEntries() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SuiquFilter-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("old-image.png")
+        try Data().write(to: image)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: image.path)
+        for index in 0..<30 { try Data().write(to: folder.appendingPathComponent("\(index).txt")) }
+        let snapshot = try FolderScanner.scan(FolderSource(url: folder), cancellation: ScanCancellation(), filter: .image)
+        defer { if snapshot.descriptor >= 0 { close(snapshot.descriptor) } }
+        XCTAssertEqual(snapshot.entries.map(\.url.lastPathComponent), ["old-image.png"])
     }
 }

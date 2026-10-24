@@ -65,7 +65,7 @@ struct LineView: View {
                 Rope(width: width)
 
                 if line.items.isEmpty {
-                    Hint(message: line.loading ? "正在读取目录…" : line.currentFolder == nil ? "添加文件夹来源，或开启图片记录" : "这个目录暂时没有可显示的项目")
+                    Hint(message: line.loading ? "正在读取目录…" : line.filter != nil ? "此类型暂无项目，可选择全部或切换来源" : line.isRecent ? "暂无最近访问，可先添加目录或打开文件" : line.isClipboard ? "截图会挂在这里，也可开启剪贴板记录" : "这个目录暂时没有可显示的项目")
                         .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
                         .transition(.opacity)
                 }
@@ -81,12 +81,22 @@ struct LineView: View {
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
                 }
 
+                if let message = line.sourceMessage ?? (line.isClipboard ? line.recordingMessage : nil) {
+                    Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .lineLimit(1).frame(maxWidth: min(800, width - 48))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .help(message)
+                        .position(x: width / 2, y: Layout.panelHeight - 64)
+                }
+
                 SourceToolbar(line: line)
                     .fixedSize()
                     .background(GeometryReader { geometry in
                         Color.clear.preference(key: HitRectsKey.self, value: [toolbarID: geometry.frame(in: .global)])
                     })
-                    .position(x: max(240, width - 300), y: Layout.panelHeight - 27)
+                    .frame(width: max(0, width - 32), alignment: .trailing)
+                    .position(x: width / 2, y: Layout.panelHeight - 27)
             }
             .animation(reduceMotion ? nil : .spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
             .animation(.easeInOut(duration: 0.3), value: line.items.isEmpty)

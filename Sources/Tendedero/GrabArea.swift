@@ -21,6 +21,7 @@ struct GrabArea: NSViewRepresentable {
         let id = item.id
         let line = line
         view.url = item.url
+        view.text = item.text
         view.dragImage = item.thumb
         view.canDiscard = item.sourceID == nil && !isPreview
         view.onHover = { hovering, frame in
@@ -37,13 +38,14 @@ struct GrabArea: NSViewRepresentable {
             line.draggingID = id
             if !isPreview { HoverPreview.shared.close() }
         }
-        view.onDragEnd = {
+        view.onDragEnd = { succeeded in
             line.draggingID = nil
+            if succeeded { line.recordUsage(item) }
             HoverPreview.shared.close()
             line.refreshSource()
         }
         view.onDiscard = { line.discard(id) }
-        view.onLongPress = { line.quickLook(id) }
+        view.onLongPress = { line.markup(id) }
         view.onForceClick = { line.quickLook(id) }
         view.onPressChange = { pressed in line.pressedID = pressed ? id : nil }
         view.menuProvider = {
@@ -53,8 +55,13 @@ struct GrabArea: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(L("Copy")) { line.copy(id) })
             menu.addItem(ClosureMenuItem(L("Open")) { line.open(id) })
             menu.addItem(ClosureMenuItem(L("Quick Look")) { line.quickLook(id) })
-            menu.addItem(ClosureMenuItem("复制绝对路径") { line.copyPath(id) })
-            menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
+            if item.text == nil {
+                menu.addItem(ClosureMenuItem("复制绝对路径") { line.copyPath(id) })
+                menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
+            }
+            if item.kind == .image || item.kind == .video {
+                menu.addItem(ClosureMenuItem(item.kind == .image ? "标注" : "裁剪") { line.markup(id) })
+            }
             if item.sourceID == nil {
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem("移除历史（保留原件）") { line.discard(id) })
@@ -70,11 +77,12 @@ final class GrabView: NSView, NSDraggingSource {
     static var isShowingMenu = false
 
     var url: URL?
+    var text: String?
     var dragImage: NSImage?
     var onClick: () -> Void = {}
     var onDoubleClick: () -> Void = {}
     var onDragStart: () -> Void = {}
-    var onDragEnd: () -> Void = {}
+    var onDragEnd: (Bool) -> Void = { _ in }
     var canDiscard = false
     var onHover: (Bool, CGRect) -> Void = { _, _ in }
     var onMouseDown: () -> Void = {}
@@ -181,7 +189,8 @@ final class GrabView: NSView, NSDraggingSource {
         Self.isDragging = true
         onDragStart()
 
-        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+        let payload: NSPasteboardWriting = text.map { $0 as NSString } ?? (url as NSURL)
+        let item = NSDraggingItem(pasteboardWriter: payload)
         item.setDraggingFrame(imageFrame(), contents: dragImage)
         let session = beginDraggingSession(with: [item], event: event, source: self)
         // Released where nothing accepts it: it flies back to the line.
@@ -232,7 +241,7 @@ final class GrabView: NSView, NSDraggingSource {
         downPoint = nil
         log.notice("Drag ended with operation \(operation.rawValue, privacy: .public)")
         // A destination's move/delete result never authorizes deleting the source.
-        onDragEnd()
+        onDragEnd(operation.contains(.copy))
     }
 
     /// The drag preview keeps the photo's aspect ratio inside the card.

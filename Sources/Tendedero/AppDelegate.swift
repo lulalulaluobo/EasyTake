@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var panel: LinePanel!
     private var statusItem: NSStatusItem!
     private var watcher: ScreenshotWatcher?
+    private var recordingWatcher: ScreenshotWatcher?
     private var clipboardWatcher: ClipboardWatcher!
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
@@ -55,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.line.scroll(by: event.hasPreciseScrollingDeltas ? delta : delta * 12)
         }
         line.$items.receive(on: RunLoop.main).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
-        clipboardWatcher = ClipboardWatcher { [weak self] url in self?.hangCapture(url) }
+        clipboardWatcher = ClipboardWatcher(onRecord: { [weak self] record in self?.receiveRecord(record) },
+            onError: { [weak self] message in self?.line.reportRecordingError(message) })
         if ClipboardWatcher.isEnabled { clipboardWatcher.start() }
         // Only the floating-thumbnail setting belongs to direct hanging; screenshot locations stay untouched.
         if Inbox.isEnabled { Inbox.apply() }
@@ -64,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcut()
         watchMenuBarClicks()
         restoreSettingsOnTermination()
+        Markup.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
+        Trim.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
 
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -76,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    let screenshots = ScreenshotWatcher.screenshotFolder()
+                    let recordings = ScreenshotWatcher.recordingFolder()
+                    let recordingFolder: URL? = recordings == screenshots ? nil : recordings
+                    if self.watcher?.folder != screenshots || self.recordingWatcher?.folder != recordingFolder {
+                        self.startWatcher()
+                    }
                     if name == NSWorkspace.activeSpaceDidChangeNotification { self.openedOnPurpose = false }
                     if !self.openedOnPurpose, let screen = self.panel.screen, FullScreen.blocksLine(on: screen) {
                         self.setRevealed(false)
@@ -96,8 +106,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startWatcher() {
         watcher?.stop()
-        watcher = ScreenshotWatcher(onNew: { [weak self] url in self?.hangCapture(url) }, onChange: {})
+        recordingWatcher?.stop()
+        let recordings = ScreenshotWatcher.recordingFolder()
+        let screenshots = ScreenshotWatcher.screenshotFolder()
+        watcher = ScreenshotWatcher(folder: screenshots, acceptRecordings: recordings == screenshots,
+            onNew: { [weak self] url in self?.hangCapture(url) }, onChange: {})
         watcher?.start()
+        if recordings != screenshots {
+            recordingWatcher = ScreenshotWatcher(folder: recordings, acceptRecordings: true,
+                onNew: { [weak self] url in self?.hangCapture(url) }, onChange: {})
+            recordingWatcher?.start()
+        } else { recordingWatcher = nil }
     }
 
     private func restoreSettingsOnTermination() {
@@ -161,6 +180,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func sourcesMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if line.showRecent {
+            let recent = ClosureMenuItem("最近访问") { [weak self] in self?.line.selectSource(Line.recentID) }
+            recent.state = line.isRecent ? .on : .off
+            menu.addItem(recent)
+        }
         let clipboard = ClosureMenuItem("剪贴板与截图") { [weak self] in self?.line.selectSource(nil) }
         clipboard.state = line.sourceID == nil ? .on : .off
         menu.addItem(clipboard)
@@ -208,6 +232,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func settingsMenu() -> NSMenu {
         let menu = NSMenu()
+        let recent = ClosureMenuItem("显示最近访问来源") { [weak self] in
+            guard let self else { return }; self.line.setShowRecent(!self.line.showRecent)
+        }
+        recent.state = line.showRecent ? .on : .off
+        menu.addItem(recent)
+        let systemRecent = ClosureMenuItem("包含已授权目录的系统最近访问") { [weak self] in
+            guard let self else { return }; self.line.setSystemRecent(!self.line.systemRecentEnabled)
+        }
+        systemRecent.state = line.systemRecentEnabled ? .on : .off
+        menu.addItem(systemRecent)
+        let capacity = NSMenuItem(title: "挂绳保留数量", action: nil, keyEquivalent: "")
+        let capacities = NSMenu()
+        let fit = ClosureMenuItem("与屏幕可显示数量相同") { [weak self] in Line.keepOnLine = nil; self?.line.trimHistory() }
+        fit.state = Line.keepOnLine == nil ? .on : .off
+        capacities.addItem(fit)
+        for count in Line.keepChoices {
+            let item = ClosureMenuItem("\(count) 项") { [weak self] in Line.keepOnLine = count; self?.line.trimHistory() }
+            item.state = Line.keepOnLine == count ? .on : .off
+            capacities.addItem(item)
+        }
+        capacity.submenu = capacities
+        menu.addItem(capacity)
+        let sound = ClosureMenuItem("声音") { [weak self] in self?.line.soundOn.toggle() }
+        sound.state = line.soundOn ? .on : .off
+        menu.addItem(sound)
+        let login = ClosureMenuItem("登录时启动") {
+            do {
+                if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
+                else { try SMAppService.mainApp.register() }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法更改登录启动设置"
+                alert.informativeText = "请将随取移至应用程序目录后重试。\n\(error.localizedDescription)"
+                alert.runModal()
+            }
+        }
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
+        menu.addItem(.separator())
         let hover = ClosureMenuItem("顶边停留呼出") { Self.opensFromMenuBar.toggle() }
         hover.state = Self.opensFromMenuBar ? .on : .off
         menu.addItem(hover)
@@ -225,12 +288,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         full.state = FullScreen.showLineOver ? .on : .off
         menu.addItem(full)
         menu.addItem(.separator())
-        let clipboard = ClosureMenuItem("记录复制的图片") { [weak self] in
+        let clipboard = ClosureMenuItem("记录剪贴板（图片、文本及文件）") { [weak self] in
             ClipboardWatcher.isEnabled.toggle()
             if ClipboardWatcher.isEnabled { self?.clipboardWatcher.start() } else { self?.clipboardWatcher.stop() }
         }
         clipboard.state = ClipboardWatcher.isEnabled ? .on : .off
         menu.addItem(clipboard)
+        if let message = line.recordingMessage {
+            let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+        }
         let screenshots = ClosureMenuItem("截图直接挂起（关闭系统浮动缩略图）") { [weak self] in
             Inbox.isEnabled.toggle()
             if Inbox.isEnabled { Inbox.apply() } else { Inbox.restore() }
@@ -366,13 +434,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateCapacity() {
         line.visibleCount = max(1, min(12, Int((panel.frame.width - 200) / Layout.spacing)))
+        line.trimHistory()
     }
 
     private func hangCapture(_ url: URL) {
+        receiveRecord(ClipboardRecord(url: url, kind: FileKind.identify(url)), isCapture: true)
+    }
+
+    private func receiveRecord(_ record: ClipboardRecord, isCapture: Bool = false) {
         // Captures enter their own history without switching a folder source.
-        let canShow = line.sourceID == nil && Self.peeksAtNew
-        let from = canShow && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? captureRect(of: url) : nil
-        guard let id = line.hang(url, flying: from != nil) else { return }
+        let canShow = line.isClipboard && Self.peeksAtNew && !GrabView.isDragging
+            && (line.filter == nil || line.filter == record.kind)
+        let from = canShow && isCapture && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? captureRect(of: record.url) : nil
+        guard let id = line.recordClipboard(record, flying: from != nil) else { return }
         guard canShow, !GrabView.isDragging else { return }
         let screen = LinePanel.screenUnderPointer()
         guard screen.map({ !FullScreen.blocksLine(on: $0) }) ?? false else { line.land(id); return }
@@ -436,8 +510,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: "排序", action: nil, keyEquivalent: "")
             item.submenu = sortMenu()
             menu.addItem(item)
-        } else {
-            menu.addItem(ClosureMenuItem("清空图片历史（保留原件）") { [weak self] in self?.line.clear() })
+        } else if line.isClipboard {
+            menu.addItem(ClosureMenuItem("清空剪贴板历史（保留原件）") { [weak self] in self?.line.clear() })
         }
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem("退出随取", key: "q") { NSApp.terminate(nil) })

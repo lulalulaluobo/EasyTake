@@ -21,15 +21,16 @@ final class ThumbnailLoader: @unchecked Sendable {
     @discardableResult
     func load(_ url: URL, kind: FileKind, pixels: Int, modified: Date? = nil,
               completion: @escaping (NSImage?) -> Void) -> Operation {
-        let key = "\(url.path)|\(pixels)|\(modified?.timeIntervalSince1970 ?? 0)" as NSString
         let operation = BlockOperation()
         operation.addExecutionBlock { [weak operation, self] in
             guard operation?.isCancelled == false else { return }
+            let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .contentModificationDateKey])
+            let date = modified ?? values?.contentModificationDate
+            let key = "\(url.path)|\(pixels)|\(date?.timeIntervalSince1970 ?? 0)" as NSString
             let image: NSImage?
             if let cached = cache.object(forKey: key) { image = cached }
             else {
-                let status = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-                if status?.ubiquitousItemDownloadingStatus == .notDownloaded { image = nil }
+                if values?.ubiquitousItemDownloadingStatus == .notDownloaded { image = nil }
                 else if kind == .image || kind == .video { image = makeThumbnail(url, maxPixels: pixels) }
                 else { image = NSWorkspace.shared.icon(forFile: url.path) }
                 if let image {
@@ -37,7 +38,7 @@ final class ThumbnailLoader: @unchecked Sendable {
                 }
             }
             guard operation?.isCancelled == false else { return }
-            DispatchQueue.main.async { if operation?.isCancelled == false { completion(image) } }
+            DispatchQueue.main.async { [operation] in if operation?.isCancelled == false { completion(image) } }
         }
         queue.addOperation(operation)
         return operation

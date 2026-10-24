@@ -60,6 +60,14 @@ struct PeggedView: View {
     @ViewBuilder private var cardContents: some View {
         if item.kind == .image || item.kind == .video {
             Image(nsImage: item.thumb).resizable().interpolation(.high)
+        } else if let text = item.text {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(text).font(.system(size: 11)).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                Text("\(text.count) 字符").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(item.kind.tint)
         } else {
             VStack(spacing: 5) {
                 Image(nsImage: item.thumb).resizable().scaledToFit().frame(width: 32, height: 32)
@@ -94,6 +102,7 @@ struct PeggedView: View {
                 }
             }
             .padding(Frame.inset)
+            .background(item.kind.tint.opacity(0.85), in: RoundedRectangle(cornerRadius: Frame.radius))
             .glassFrame(cornerRadius: Frame.radius)
             .shadow(color: .black.opacity(hovering ? 0.26 : 0.18), radius: hovering ? 14 : 10, y: hovering ? 8 : 5)
             // Holding presses the photo in slowly, so a long press feels like
@@ -102,9 +111,7 @@ struct PeggedView: View {
             .animation(pressed ? .easeInOut(duration: 0.45) : .spring(response: 0.3, dampingFraction: 0.6), value: pressed)
             .opacity(dragging ? 0.45 : 1)
             .overlay(alignment: .topLeading) {
-                // Drawn here, clicked through GrabView, which sits on top. A
-                // cross sends a file in Tendedero's folder to the Trash; for a
-                // file anywhere else it only hides it from the line.
+                // Removing history only releases references and app-owned cache assets.
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.primary)
@@ -116,8 +123,8 @@ struct PeggedView: View {
                     .allowsHitTesting(false)
             }
             .overlay(GrabArea(item: item, line: line))
-            .help(item.url.lastPathComponent)
-            .accessibilityLabel("\(item.kind.title)：\(item.url.lastPathComponent)")
+            .help(item.text.map { String($0.prefix(200)) } ?? item.url.lastPathComponent)
+            .accessibilityLabel("\(item.kind.title)：\(item.text.map { String($0.prefix(200)) } ?? item.url.lastPathComponent)")
             .overlay(alignment: .bottom) {
                 if copied {
                     Label(L("Copied"), systemImage: "checkmark")

@@ -6,17 +6,32 @@ struct SourceToolbar: View {
     @State private var dropTarget = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if line.loading { ProgressView().controlSize(.small) }
             if let message = line.sourceMessage {
                 Button("重试", systemImage: "arrow.clockwise", action: line.refreshSource)
                     .labelStyle(.iconOnly)
                     .help(message)
             }
+            Button("全部") { line.setFilter(nil) }
+                .foregroundStyle(line.filter == nil ? Color.primary : .secondary)
+                .accessibilityValue(line.filter == nil ? "已选中" : "未选中")
+            ForEach(FileKind.allCases, id: \.self) { kind in
+                Button { line.setFilter(kind) } label: {
+                    Image(systemName: line.filter == kind ? "checkmark" : kind.symbol)
+                        .frame(width: 23, height: 23)
+                        .foregroundStyle(Color.black.opacity(0.75))
+                        .background(kind.tint, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(line.filter == kind ? Color.orange : .clear, lineWidth: 1.5))
+                }
+                .accessibilityLabel("筛选\(kind.title)")
+                .accessibilityValue(line.filter == kind ? "已选中" : "未选中")
+                .help(kind.title)
+            }
             Button("卡片大小", systemImage: "rectangle.expand.vertical", action: line.onSizeMenu)
                 .labelStyle(.iconOnly)
             Button(action: line.onSourcesMenu) {
-                Label(line.sourceTitle, systemImage: line.currentFolder == nil ? "clipboard" : "folder")
+                Label(line.sourceTitle, systemImage: line.isRecent ? "clock" : line.isClipboard ? "clipboard" : "folder")
                     .lineLimit(1)
                     .frame(maxWidth: 130)
             }

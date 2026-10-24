@@ -32,12 +32,12 @@ final class ScreenshotWatcher {
     /// Watches the folder macOS saves screenshots to, or a given folder.
     /// `anyImage` takes every new image even on the Desktop, for a folder
     /// the user chose to watch.
-    init(folder: URL? = nil, anyImage: Bool = false, onNew: @escaping (URL) -> Void, onChange: @escaping () -> Void) {
+    init(folder: URL? = nil, anyImage: Bool = false, acceptRecordings: Bool = false, onNew: @escaping (URL) -> Void, onChange: @escaping () -> Void) {
         self.onNew = onNew
         self.onChange = onChange
         self.folder = folder ?? Self.screenshotFolder()
         onlyTaggedScreenshots = !anyImage
-        acceptsRecordings = self.folder.standardizedFileURL.path == Inbox.folder.standardizedFileURL.path
+        acceptsRecordings = acceptRecordings
     }
 
     static func screenshotFolder() -> URL {
@@ -50,10 +50,18 @@ final class ScreenshotWatcher {
             ?? (CFPreferencesCopyAppValue("location" as CFString, domain) as? String)
         if let raw, !raw.isEmpty {
             let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue { return url }
+            return url
         }
         return fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
+    }
+
+    static func recordingFolder() -> URL {
+        let domain = "com.apple.screencapture" as CFString
+        CFPreferencesAppSynchronize(domain)
+        if let raw = CFPreferencesCopyAppValue("location-screenrecording" as CFString, domain) as? String, !raw.isEmpty {
+            return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return screenshotFolder()
     }
 
     /// Anything created after the app launched counts as new, even if it

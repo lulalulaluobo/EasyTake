@@ -336,18 +336,51 @@ final class Line: ObservableObject {
 
     @discardableResult
     func hang(_ url: URL, quietly: Bool = false, flying: Bool = false) -> UUID? {
-        guard !captures.contains(where: { $0.url == url }) else { return nil }
-        var item = Pegged(url: url)
+        recordClipboard(ClipboardRecord(url: url, kind: FileKind.identify(url)), flying: flying, quietly: quietly)
+    }
+
+    @discardableResult
+    func recordClipboard(_ record: ClipboardRecord, flying: Bool = false, quietly: Bool = false) -> UUID? {
+        guard !captures.contains(where: { $0.url == record.url }),
+              record.text == nil || captures.last?.text != record.text else {
+            ClipboardAssets.queue.async { ClipboardAssets.remove(record) }
+            return nil
+        }
+        var item = Pegged(url: record.url, id: record.id, kind: record.kind, text: record.text, ownedAsset: record.ownedAsset)
         item.flying = flying
         captures.append(item)
-        if captures.count > 100 { captures.removeFirst(captures.count - 100) }
+        trimHistory()
         saveCaptures()
-        if sourceID == nil {
-            items = captures
+        if isClipboard, draggingID == nil {
+            candidates = Array(captures.reversed())
+            publishCandidates()
             scroll = 0
-            loadThumbnail(item)
+            if item.text == nil { loadThumbnail(item) }
         }
+        if !quietly { play("Tink", volume: 0.35) }
         return item.id
+    }
+
+    private var historyLimit: Int {
+        let saved = defaults.integer(forKey: "keepOnLine")
+        return Self.keepChoices.contains(saved) ? saved : max(1, visibleCount)
+    }
+
+    func trimHistory() {
+        guard draggingID == nil else { return }
+        let count = max(0, captures.count - historyLimit)
+        let removed = Array(captures.prefix(count))
+        captures.removeFirst(count)
+        cleanAssets(removed)
+        if isClipboard { candidates = Array(captures.reversed()); publishCandidates() }
+        saveCaptures()
+    }
+
+    func reportRecordingError(_ message: String) { recordingMessage = message }
+
+    private func cleanAssets(_ items: [Pegged]) {
+        let records = items.map { ClipboardRecord(id: $0.id, url: $0.url, kind: $0.kind, text: $0.text, ownedAsset: $0.ownedAsset) }
+        ClipboardAssets.queue.async { records.forEach { ClipboardAssets.remove($0) } }
     }
 
     func land(_ id: UUID) {
@@ -356,17 +389,25 @@ final class Line: ObservableObject {
     }
 
     func discard(_ id: UUID, quietly: Bool = false) {
-        guard sourceID == nil, let item = items.first(where: { $0.id == id }) else { return }
+        guard isClipboard, draggingID == nil, let item = items.first(where: { $0.id == id }) else { return }
+        HoverPreview.shared.close()
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { onFall?(item) }
         captures.removeAll { $0.id == id }
-        items.removeAll { $0.id == id }
+        candidates = Array(captures.reversed())
+        publishCandidates()
+        cleanAssets([item])
         hitRects[id] = nil
         saveCaptures()
+        if !quietly { play("Pop", volume: 0.25) }
     }
 
     func clear() {
-        guard sourceID == nil else { return }
+        guard isClipboard, draggingID == nil else { return }
+        HoverPreview.shared.close()
+        QuickLook.shared.close()
+        cleanAssets(captures)
         captures = []
+        candidates = []
         items = []
         saveCaptures()
     }
@@ -381,11 +422,34 @@ final class Line: ObservableObject {
         HoverPreview.shared.close()
     }
 
-    func copy(_ id: UUID) {
+    func copy(_ id: UUID, pasteboard pb: NSPasteboard = .general) {
         guard let item = items.first(where: { $0.id == id }) else { return }
-        let pb = NSPasteboard.general
+        let entry = NSPasteboardItem()
+        entry.setString("1", forType: ClipboardWatcher.ownCopyType)
+        if let text = item.text { entry.setString(text, forType: .string) }
+        else { entry.setString(item.url.absoluteString, forType: .fileURL) }
         pb.clearContents()
-        pb.writeObjects([item.url as NSURL])
+        pb.writeObjects([entry])
+        if item.kind == .image, !item.isPlaceholder {
+            let count = pb.changeCount
+            let pasteboardName = pb.name.rawValue
+            ClipboardAssets.queue.async {
+                let values = try? item.url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])
+                guard values?.ubiquitousItemDownloadingStatus != .notDownloaded,
+                      let size = values?.fileSize, size <= ClipboardAssets.maxImageBytes,
+                      let data = try? Data(contentsOf: item.url), let png = ClipboardAssets.png(from: data) else { return }
+                DispatchQueue.main.async {
+                    let pb = NSPasteboard(name: NSPasteboard.Name(pasteboardName))
+                    guard pb.changeCount == count else { return }
+                    let imageEntry = NSPasteboardItem()
+                    imageEntry.setString(item.url.absoluteString, forType: .fileURL)
+                    imageEntry.setString("1", forType: ClipboardWatcher.ownCopyType)
+                    imageEntry.setData(png, forType: .png)
+                    pb.clearContents()
+                    pb.writeObjects([imageEntry])
+                }
+            }
+        }
         copiedID = id
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             if self?.copiedID == id { self?.copiedID = nil }
@@ -393,14 +457,24 @@ final class Line: ObservableObject {
     }
 
     func copyPath(_ id: UUID) {
-        guard let item = items.first(where: { $0.id == id }) else { return }
+        guard let item = items.first(where: { $0.id == id }), item.text == nil else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(item.url.path, forType: .string)
     }
 
     func open(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
-        NSWorkspace.shared.open(item.url)
+        if NSWorkspace.shared.open(item.url) { recentFiles.record(item) }
+    }
+
+    func recordUsage(_ item: Pegged) { recentFiles.record(item) }
+
+    func markup(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }), !item.isPlaceholder else { return }
+        HoverPreview.shared.close()
+        if item.kind == .image { Markup.shared.edit(item.url) }
+        else if item.kind == .video { Trim.shared.edit(item.url, size: item.thumb.size) }
+        else { quickLook(id) }
     }
 
     func quickLook(_ id: UUID) {
@@ -410,7 +484,7 @@ final class Line: ObservableObject {
     }
 
     func reveal(_ id: UUID) {
-        guard let item = items.first(where: { $0.id == id }) else { return }
+        guard let item = items.first(where: { $0.id == id }), item.text == nil else { return }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
@@ -421,7 +495,7 @@ final class Line: ObservableObject {
     func reloadThumbnails() {
         thumbnailTasks.forEach { $0.cancel() }
         thumbnailTasks = []
-        for item in items where !item.isPlaceholder { loadThumbnail(item) }
+        for item in items where !item.isPlaceholder && item.text == nil { loadThumbnail(item) }
     }
 
     private func loadThumbnail(_ item: Pegged) {
@@ -444,5 +518,15 @@ final class Line: ObservableObject {
         }
     }
 
-    private func saveCaptures() { AppSettings.defaults.set(captures.map(\.url.path), forKey: "pegged") }
+    private func saveCaptures() {
+        let records = captures.map { ClipboardRecord(id: $0.id, url: $0.url, kind: $0.kind, text: $0.text, ownedAsset: $0.ownedAsset) }
+        do { defaults.set(try JSONEncoder().encode(records), forKey: "clipboardRecords") }
+        catch { recordingMessage = "无法保存剪贴板记录：\(error.localizedDescription)" }
+    }
+
+    private func play(_ name: String, volume: Float) {
+        guard soundOn, let sound = NSSound(named: name)?.copy() as? NSSound else { return }
+        sound.volume = volume
+        sound.play()
+    }
 }
