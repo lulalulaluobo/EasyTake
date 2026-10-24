@@ -48,7 +48,12 @@ final class ClipboardWatcher {
         guard Self.ignoredTypes.isDisjoint(with: types),
               pasteboard.pasteboardItems?.allSatisfy({ Self.ignoredTypes.isDisjoint(with: $0.types) }) == true else { return }
         let request = generation
-        if let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !files.isEmpty {
+        // PixPin supplies both a temporary file URL and the actual screenshot pixels. Keep the pixels;
+        // its temporary URL can disappear immediately after the capture.
+        if types.contains(.init("com.depthpicture.pixpin.metadata")),
+           let type = pasteboard.availableType(from: [.png, .tiff]), let data = pasteboard.data(forType: type) {
+            recordImage(data, request: request)
+        } else if let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !files.isEmpty {
             deliver(request) {
                 try files.prefix(100).map { url in
                     let values = try url.resourceValues(forKeys: [.isDirectoryKey])
@@ -62,14 +67,18 @@ final class ClipboardWatcher {
                 return [ClipboardRecord(url: url, kind: .text, text: text, ownedAsset: true)]
             }
         } else if let type = pasteboard.availableType(from: [.png, .tiff]), let data = pasteboard.data(forType: type) {
-            guard data.count <= ClipboardAssets.maxImageBytes else { onError("图片超过 64 MB，未记录。"); return }
-            deliver(request) {
-                guard let png = ClipboardAssets.png(from: data) else {
-                    throw NSError(domain: "Suiqu", code: 2, userInfo: [NSLocalizedDescriptionKey: "图片无法解码或超过像素上限，未记录。"])
-                }
-                let url = try ClipboardAssets.save(png, extension: "png")
-                return [ClipboardRecord(url: url, kind: .image, ownedAsset: true)]
+            recordImage(data, request: request)
+        }
+    }
+
+    private func recordImage(_ data: Data, request: UUID) {
+        guard data.count <= ClipboardAssets.maxImageBytes else { onError("图片超过 64 MB，未记录。"); return }
+        deliver(request) {
+            guard let png = ClipboardAssets.png(from: data) else {
+                throw NSError(domain: "Suiqu", code: 2, userInfo: [NSLocalizedDescriptionKey: "图片无法解码或超过像素上限，未记录。"])
             }
+            let url = try ClipboardAssets.save(png, extension: "png")
+            return [ClipboardRecord(url: url, kind: .image, ownedAsset: true)]
         }
     }
 

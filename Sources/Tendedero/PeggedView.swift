@@ -63,19 +63,21 @@ struct PeggedView: View {
         } else if let text = item.text {
             VStack(alignment: .leading, spacing: 5) {
                 Text(text).font(.system(size: 11)).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-                Text("\(text.count) 字符").font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("\(text.count) 字符").font(.system(size: 9)).foregroundStyle(Color.black.opacity(0.60))
             }
             .padding(9)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(Color.black.opacity(0.85))
             .background(item.kind.tint)
         } else {
             VStack(spacing: 5) {
                 Image(nsImage: item.thumb).resizable().scaledToFit().frame(width: 32, height: 32)
                 Text(item.url.lastPathComponent).font(.system(size: 11, weight: .medium)).lineLimit(2)
-                Label(item.kind.title, systemImage: item.kind.symbol).font(.system(size: 9)).foregroundStyle(.secondary)
+                Label(item.kind.title, systemImage: item.kind.symbol).font(.system(size: 9)).foregroundStyle(Color.black.opacity(0.60))
             }
             .padding(8)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(Color.black.opacity(0.85))
             .background(item.kind.tint)
         }
     }

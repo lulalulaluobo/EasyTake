@@ -1,6 +1,6 @@
 ## What and why
 
-<!-- What changes for someone using Tendedero, and why. If it fixes an issue: Closes #123 -->
+<!-- What changes for someone using EasyTake, and why. If it fixes an issue: Closes #123 -->
 
 ## How you tested it
 

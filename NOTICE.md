@@ -1,6 +1,6 @@
 # 上游来源与品牌
 
-随取以 Alejandro Buján 的 [Tendedero](https://github.com/alejandrobujan/tendedero) 为底座。
+EasyTake（随取）以 Alejandro Buján 的 [Tendedero](https://github.com/alejandrobujan/tendedero) 为底座。
 
 - 克隆日期：2026-10-24。
 - 上游版本：1.6.0。
@@ -10,4 +10,4 @@
 
 随取的修改版需使用自己的名称、图标、应用标识和产品说明，不声称得到上游作者认可。上游 `scripts/make-icon.swift` 与 `docs` 中的 Tendedero 品牌素材不得作为随取的产品标识或宣传配图复用。
 
-本次初始化保留上游应用源码及构建脚本原状。当前 `swift build` 产物仍是 Tendedero；品牌改造与功能实现以 [PRD.md](PRD.md) 为准，尚未完成。
+修改版沿用原生工程，SwiftPM 目标为 `Suiqu`，应用名称为「随取」，标识为 `local.suiqu.app`，数据目录为 `Application Support/Suiqu`。`scripts/make-suiqu-icon.swift` 绘制自有橙色闪电文件图标，构建产物不使用上游图标或宣传图。应用包内包含原始 LICENSE 及本来源说明；功能与验收状态以 [PRD.md](PRD.md) 和 [README.md](README.md) 为准。

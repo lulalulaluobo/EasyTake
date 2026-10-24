@@ -1,31 +1,39 @@
 import Foundation
 import UniformTypeIdentifiers
 
-enum FolderSort: String, Codable, CaseIterable {
-    case modified, created
-    var title: String { self == .modified ? "最近修改" : "最近新建" }
-}
-
 struct FolderSource: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
     var bookmark: Data
     var path: String
-    var sort: FolderSort = .modified
-
-    init(url: URL, id: UUID = UUID(), sort: FolderSort = .modified) throws {
+    // Codable ignores the legacy "sort" field; all sources now use Date Added.
+    init(url: URL, id: UUID = UUID()) throws {
         self.id = id
         self.name = url.lastPathComponent
         self.path = url.standardizedFileURL.path
-        self.sort = sort
-        self.bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        self.bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
     }
 
     func resolve() throws -> (URL, Bool) {
+        try FileBookmark.resolve(bookmark)
+    }
+}
+
+enum FileBookmark {
+    static func resolve(_ data: Data) throws -> (URL, Bool) {
         var stale = false
-        let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil,
-                          bookmarkDataIsStale: &stale)
-        return (url, stale)
+        do {
+            let url = try URL(resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting],
+                              relativeTo: nil, bookmarkDataIsStale: &stale)
+            return (url, stale)
+        } catch {
+            // Compatibility for older bookmarks with an embedded security scope. New bookmarks use
+            // ordinary file references, as the non-sandboxed FilePanel implementation does.
+            stale = false
+            let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                              relativeTo: nil, bookmarkDataIsStale: &stale)
+            return (url, stale)
+        }
     }
 }
 
@@ -63,7 +71,7 @@ struct FolderEntry {
     let url: URL
     let kind: FileKind
     let modified: Date?
-    let created: Date?
+    let added: Date?
     let isPlaceholder: Bool
 }
 
@@ -97,9 +105,9 @@ enum FolderScanner {
     static let scanLimit = 10_000
     static let timeLimit: TimeInterval = 3
 
-    static func precedes(_ a: FolderEntry, _ b: FolderEntry, sort: FolderSort) -> Bool {
-        let lhs = sort == .modified ? a.modified : a.created
-        let rhs = sort == .modified ? b.modified : b.created
+    static func precedes(_ a: FolderEntry, _ b: FolderEntry) -> Bool {
+        let lhs = a.added
+        let rhs = b.added
         if lhs != rhs {
             guard let lhs else { return false }
             guard let rhs else { return true }
@@ -112,7 +120,7 @@ enum FolderScanner {
         if cancellation.isCancelled { throw CancellationError() }
         let (url, stale) = try source.resolve()
         let access = FolderAccess(url)
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey, .creationDateKey,
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey, .addedToDirectoryDateKey,
                                        .ubiquitousItemDownloadingStatusKey]
         var scanError: Error?
         guard let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: Array(keys),
@@ -130,15 +138,15 @@ enum FolderScanner {
             count += 1
             let values = try file.resourceValues(forKeys: keys)
             let entry = FolderEntry(url: file, kind: FileKind.identify(file, isDirectory: values.isDirectory == true),
-                modified: values.contentModificationDate, created: values.creationDate,
+                modified: values.contentModificationDate, added: values.addedToDirectoryDate,
                 isPlaceholder: values.ubiquitousItemDownloadingStatus == .notDownloaded)
             if let filter, entry.kind != filter { continue }
             candidates.append(entry)
-            candidates.sort { precedes($0, $1, sort: source.sort) }
+            candidates.sort(by: precedes)
             if candidates.count > candidateLimit { candidates.removeLast() }
         }
         if let scanError { throw scanError }
-        let refreshed = stale ? try FolderSource(url: url, id: source.id, sort: source.sort) : nil
+        let refreshed = stale ? try FolderSource(url: url, id: source.id) : nil
         let descriptor = open(url.path, O_EVTONLY)
         return FolderSnapshot(entries: candidates, scannedCount: count, limited: limited, access: access,
                               refreshedSource: refreshed, descriptor: descriptor)

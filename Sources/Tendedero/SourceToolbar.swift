@@ -7,7 +7,7 @@ struct SourceToolbar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if line.loading { ProgressView().controlSize(.small) }
+            if line.loading && line.items.isEmpty { ProgressView().controlSize(.small) }
             if let message = line.sourceMessage {
                 Button("重试", systemImage: "arrow.clockwise", action: line.refreshSource)
                     .labelStyle(.iconOnly)
@@ -35,8 +35,12 @@ struct SourceToolbar: View {
                     .lineLimit(1)
                     .frame(maxWidth: 130)
             }
-            if let folder = line.currentFolder {
-                Button(folder.sort.title, action: line.onSortMenu)
+            if line.currentFolder != nil {
+                Text("添加日期 ↓")
+                    .help("按访达添加日期由新到旧排列")
+            } else if line.isClipboard {
+                Button(line.clipboardRecording ? "暂停记录" : "开启记录", systemImage: line.clipboardRecording ? "pause.circle" : "record.circle", action: line.onToggleClipboard)
+                    .help("第三方截图复制到剪贴板后可挂起；关闭时不读取剪贴板内容")
             }
             Button("添加来源", systemImage: "folder.badge.plus", action: line.onAddFolder)
                 .labelStyle(.iconOnly)

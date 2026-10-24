@@ -22,14 +22,27 @@ struct GrabArea: NSViewRepresentable {
         let line = line
         view.url = item.url
         view.text = item.text
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.button)
+        view.setAccessibilityLabel(item.text.map { String($0.prefix(100)) } ?? item.url.lastPathComponent)
+        let previewName = item.kind == .video ? "播放视频" : item.kind == .text ? "预览全文" : "预览"
+        view.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: previewName) { [weak view] in
+            guard let view, let window = view.window else { return false }
+            let anchor = window.convertToScreen(view.convert(view.bounds, to: nil))
+            HoverPreview.shared.show(item: item, line: line, anchor: anchor, playVideo: item.kind == .video, persistent: true)
+            return true
+        }])
         view.dragImage = item.thumb
         view.canDiscard = item.sourceID == nil && !isPreview
         view.onHover = { hovering, frame in
             if isPreview {
-                if hovering { HoverPreview.shared.cancelClose() } else { HoverPreview.shared.scheduleClose() }
+                if hovering { HoverPreview.shared.cancelClose() }
+                else if !HoverPreview.shared.contains(NSEvent.mouseLocation) { HoverPreview.shared.scheduleClose() }
             } else if hovering {
                 HoverPreview.shared.schedule(item: item, line: line, anchor: frame)
-            } else { HoverPreview.shared.scheduleClose() }
+            }
+            // Card exits are resolved by the existing pointer poll. Tracking-area rebuilds must
+            // not cancel a hover just because a thumbnail or card size changed.
         }
         view.onMouseDown = { HoverPreview.shared.cancelPending() }
         view.onClick = { line.copy(id) }
@@ -48,13 +61,20 @@ struct GrabArea: NSViewRepresentable {
         view.onLongPress = { line.markup(id) }
         view.onForceClick = { line.quickLook(id) }
         view.onPressChange = { pressed in line.pressedID = pressed ? id : nil }
-        view.menuProvider = {
+        view.menuProvider = { [weak view] in
             let menu = NSMenu()
             // Items say themselves whether they can be used.
             menu.autoenablesItems = false
             menu.addItem(ClosureMenuItem(L("Copy")) { line.copy(id) })
             menu.addItem(ClosureMenuItem(L("Open")) { line.open(id) })
             menu.addItem(ClosureMenuItem(L("Quick Look")) { line.quickLook(id) })
+            if item.kind == .text || item.kind == .video {
+                menu.addItem(ClosureMenuItem(item.kind == .video ? "播放视频" : "预览全文") { [weak view] in
+                    guard let view, let window = view.window else { return }
+                    let anchor = window.convertToScreen(view.convert(view.bounds, to: nil))
+                    HoverPreview.shared.show(item: item, line: line, anchor: anchor, playVideo: item.kind == .video, persistent: true)
+                })
+            }
             if item.text == nil {
                 menu.addItem(ClosureMenuItem("复制绝对路径") { line.copyPath(id) })
                 menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
@@ -121,6 +141,7 @@ final class GrabView: NSView, NSDraggingSource {
     private static let holdDuration: TimeInterval = 0.45
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func accessibilityPerformPress() -> Bool { onClick(); return true }
 
     /// The discard cross drawn in the top left corner of the card. It is
     /// handled here because this view sits on top of the SwiftUI card.
@@ -264,5 +285,9 @@ final class ClosureMenuItem: NSMenuItem {
 
     required init(coder: NSCoder) { fatalError() }
 
-    @objc private func fire() { handler() }
+    @objc private func fire() {
+        let action = handler
+        // Open panels and source changes run after popup tracking has fully ended.
+        DispatchQueue.main.async(execute: action)
+    }
 }

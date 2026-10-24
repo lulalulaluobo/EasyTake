@@ -4,12 +4,26 @@ import ImageIO
 
 /// Shared bounded work queue. Preview pixels have a separate cache key from card pixels.
 final class ThumbnailLoader: @unchecked Sendable {
+    enum Purpose { case card, preview }
     static let shared = ThumbnailLoader()
-    private let queue: OperationQueue = {
+    private let cardQueue: OperationQueue = {
         let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 3
+        queue.maxConcurrentOperationCount = 2
         queue.qualityOfService = .userInitiated
         return queue
+    }()
+    // Reserve one of the three decoder slots so queued cards cannot block an active hover.
+    private let previewQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInteractive
+        return queue
+    }()
+    private let generate: (URL, FileKind, Int) -> NSImage?
+    private let latestKeys: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 100
+        return cache
     }()
     private let cache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -18,29 +32,43 @@ final class ThumbnailLoader: @unchecked Sendable {
         return cache
     }()
 
+    init(generate: @escaping (URL, FileKind, Int) -> NSImage? = { url, kind, pixels in
+        kind == .image || kind == .video ? makeThumbnail(url, maxPixels: pixels) : NSWorkspace.shared.icon(forFile: url.path)
+    }) { self.generate = generate }
+
+    func cachedImage(_ url: URL, pixels: Int, modified: Date? = nil) -> NSImage? {
+        let base = "\(url.path)|\(pixels)" as NSString
+        let key = modified.map { "\(base)|\($0.timeIntervalSince1970)" as NSString } ?? latestKeys.object(forKey: base)
+        return key.flatMap { cache.object(forKey: $0) }
+    }
+
     @discardableResult
-    func load(_ url: URL, kind: FileKind, pixels: Int, modified: Date? = nil,
+    func load(_ url: URL, kind: FileKind, pixels: Int, modified: Date? = nil, purpose: Purpose = .card,
               completion: @escaping (NSImage?) -> Void) -> Operation {
         let operation = BlockOperation()
+        operation.queuePriority = purpose == .preview ? .veryHigh : .normal
         operation.addExecutionBlock { [weak operation, self] in
             guard operation?.isCancelled == false else { return }
-            let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .contentModificationDateKey])
-            let date = modified ?? values?.contentModificationDate
-            let key = "\(url.path)|\(pixels)|\(date?.timeIntervalSince1970 ?? 0)" as NSString
+            var readingURL = url
+            readingURL.removeAllCachedResourceValues()
+            let values = try? readingURL.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .contentModificationDateKey])
+            let date = values?.contentModificationDate ?? modified
+            let base = "\(url.path)|\(pixels)" as NSString
+            let key = "\(base)|\(date?.timeIntervalSince1970 ?? 0)" as NSString
             let image: NSImage?
             if let cached = cache.object(forKey: key) { image = cached }
             else {
                 if values?.ubiquitousItemDownloadingStatus == .notDownloaded { image = nil }
-                else if kind == .image || kind == .video { image = makeThumbnail(url, maxPixels: pixels) }
-                else { image = NSWorkspace.shared.icon(forFile: url.path) }
+                else { image = generate(url, kind, pixels) }
                 if let image {
                     cache.setObject(image, forKey: key, cost: pixels * pixels * 4)
+                    latestKeys.setObject(key, forKey: base)
                 }
             }
             guard operation?.isCancelled == false else { return }
             DispatchQueue.main.async { [operation] in if operation?.isCancelled == false { completion(image) } }
         }
-        queue.addOperation(operation)
+        (purpose == .preview ? previewQueue : cardQueue).addOperation(operation)
         return operation
     }
 }

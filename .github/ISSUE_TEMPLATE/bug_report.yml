@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Tendedero doesn't work as it should.
+description: Something in EasyTake doesn't work as it should.
 labels: ["bug"]
 body:
   - type: textarea
@@ -20,23 +20,24 @@ body:
     id: macos
     attributes:
       label: macOS version
-      placeholder: macOS 27.0.1
+      placeholder: macOS 26.5
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Tendedero version
+      label: EasyTake version
       description: The release you installed, or the commit if you built it from source.
-      placeholder: "1.0.0"
+      placeholder: "0.1.4"
   - type: dropdown
-    id: handle
+    id: source
     attributes:
-      label: Is "Handle screenshots" on?
-      description: In the menu bar menu. It changes where macOS saves screenshots.
+      label: Which source were you using?
+      description: The selected source in the rope toolbar.
       options:
-        - "Yes"
-        - "No"
+        - "Recent files"
+        - "Clipboard and screenshots"
+        - "Custom folder"
         - "Not sure"
   - type: textarea
     id: more

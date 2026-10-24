@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var awaySince: Date?
     private var menuBarSuppressed = false
     private var clickMonitors: [Any] = []
+    private var hoveredCardID: UUID?
+    private var folderPicker: NSOpenPanel?
 
     static var opensFromMenuBar: Bool {
         get { !AppSettings.defaults.bool(forKey: "menuBarRevealOff") }
@@ -43,12 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCapacity()
         setUpStatusItem()
         line.onSourcesMenu = { [weak self] in self?.showMenu(self?.sourcesMenu()) }
-        line.onSortMenu = { [weak self] in self?.showMenu(self?.sortMenu()) }
         line.onSizeMenu = { [weak self] in self?.showMenu(self?.sizeMenu()) }
         line.onSettingsMenu = { [weak self] in self?.showMenu(self?.settingsMenu()) }
         line.onAddFolder = { [weak self] in self?.chooseFolder() }
         line.onDropFolder = { [weak self] url in self?.addFolder(url) }
         line.onHide = { [weak self] in self?.setRevealed(false) }
+        line.onToggleClipboard = { [weak self] in self?.setClipboardRecording(!ClipboardWatcher.isEnabled) }
         line.onFall = { [weak self] item in self?.fall(item) }
         panel.onScroll = { [weak self] event in
             let delta = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
@@ -97,6 +99,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.panel.placeOnScreen(); self?.updateCapacity() }
             }
+        if !AppSettings.defaults.bool(forKey: "welcomed") {
+            AppSettings.defaults.set(true, forKey: "welcomed")
+            toggle()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !isRevealed { toggle() }
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -130,17 +141,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func chooseFolder(replacing source: FolderSource? = nil) {
-        guard !GrabView.isDragging else { return }
+        guard !GrabView.isDragging, folderPicker == nil else { folderPicker?.makeKeyAndOrderFront(nil); return }
         line.choosingFolder = true
-        defer { line.choosingFolder = false }
         let picker = NSOpenPanel()
+        folderPicker = picker
         picker.canChooseDirectories = true
         picker.canChooseFiles = false
         picker.allowsMultipleSelection = false
         picker.prompt = source == nil ? "添加来源" : "重新授权"
         picker.message = "仅保存目录访问引用，显示直属文件；不移动或删除原件。"
+        picker.level = .modalPanel
         NSApp.activate(ignoringOtherApps: true)
-        if picker.runModal() == .OK, let url = picker.url { addFolder(url, replacing: source) }
+        picker.begin { [weak self, weak picker] response in
+            guard let self else { return }
+            let selectedURL = picker?.url
+            self.folderPicker = nil
+            if response == .OK, let url = selectedURL { self.addFolder(url, replacing: source) }
+            else { self.line.choosingFolder = false }
+        }
+        picker.makeKeyAndOrderFront(nil)
     }
 
     private func addFolder(_ url: URL, replacing source: FolderSource? = nil) {
@@ -152,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let result = Result { () throws -> FolderSource in
                 let values = try url.resourceValues(forKeys: [.isDirectoryKey])
                 guard values.isDirectory == true else { throw CocoaError(.fileReadUnsupportedScheme) }
-                return try FolderSource(url: url, id: source?.id ?? UUID(), sort: source?.sort ?? .modified)
+                return try FolderSource(url: url, id: source?.id ?? UUID())
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -175,6 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HoverPreview.shared.close()
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         GrabView.isShowingMenu = false
+    }
+
+    private func setClipboardRecording(_ enabled: Bool) {
+        ClipboardWatcher.isEnabled = enabled
+        line.clipboardRecording = enabled
+        if enabled { clipboardWatcher.start() } else { clipboardWatcher.stop() }
     }
 
     private func sourcesMenu() -> NSMenu {
@@ -203,16 +228,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
-    private func sortMenu() -> NSMenu {
-        let menu = NSMenu()
-        for sort in FolderSort.allCases {
-            let item = ClosureMenuItem(sort.title) { [weak self] in self?.line.setSort(sort) }
-            item.state = line.currentFolder?.sort == sort ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
-    }
-
     private func sizeMenu() -> NSMenu {
         let menu = NSMenu()
         for (size, title) in [(Layout.Size.small, "小卡片"), (.medium, "中卡片"), (.large, "大卡片")] {
@@ -237,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         recent.state = line.showRecent ? .on : .off
         menu.addItem(recent)
-        let systemRecent = ClosureMenuItem("包含已授权目录的系统最近访问") { [weak self] in
+        let systemRecent = ClosureMenuItem("包含系统个人文件的最近访问") { [weak self] in
             guard let self else { return }; self.line.setSystemRecent(!self.line.systemRecentEnabled)
         }
         systemRecent.state = line.systemRecentEnabled ? .on : .off
@@ -289,8 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(full)
         menu.addItem(.separator())
         let clipboard = ClosureMenuItem("记录剪贴板（图片、文本及文件）") { [weak self] in
-            ClipboardWatcher.isEnabled.toggle()
-            if ClipboardWatcher.isEnabled { self?.clipboardWatcher.start() } else { self?.clipboardWatcher.stop() }
+            self?.setClipboardRecording(!ClipboardWatcher.isEnabled)
         }
         clipboard.state = ClipboardWatcher.isEnabled ? .on : .off
         menu.addItem(clipboard)
@@ -357,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line.scroll = 0
             panel.orderFrontRegardless()
         } else {
+            hoveredCardID = nil
             pinned = false
             openedOnPurpose = false
             peekUntil = .distantPast
@@ -396,12 +411,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !inMenuBar { menuBarSuppressed = false }
         guard isRevealed else {
             let atEdge = screen.map { mouse.y >= $0.frame.maxY - 2 } ?? false
-            if Self.opensFromMenuBar, let screen, atEdge, !menuBarSuppressed, !FullScreen.blocksLine(on: screen) {
+            if Self.opensFromMenuBar, let screen, atEdge, !menuBarSuppressed {
                 if hotScreen != screen { hotZoneSince = nil; hotScreen = screen }
                 let since = hotZoneSince ?? now
                 hotZoneSince = since
                 if now.timeIntervalSince(since) >= AppSettings.revealDelay {
                     hotZoneSince = nil
+                    // Match the reference shelf: query WindowServer once at activation, not at 30 Hz.
+                    guard !FullScreen.blocksLine(on: screen) else { return }
                     panel.placeOnScreen(screen)
                     updateCapacity()
                     setRevealed(true)
@@ -415,7 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let inside = NSMouseInRect(mouse, zone, false) || HoverPreview.shared.contains(mouse)
         if inside && pinned { pinned = false }
         let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu || line.choosingFolder
-            || line.pressedID != nil || QuickLook.shared.isVisible || now < peekUntil
+            || line.pressedID != nil || QuickLook.shared.isVisible || HoverPreview.shared.keepsLineOpen || now < peekUntil
         if inside || busy { awaySince = nil }
         else {
             let since = awaySince ?? now
@@ -430,6 +447,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
         let overContent = line.hitRects.values.contains { $0.insetBy(dx: -4, dy: -4).contains(flipped) }
         panel.ignoresMouseEvents = !overContent
+        guard !GrabView.isShowingMenu, !line.choosingFolder, line.pressedID == nil else {
+            hoveredCardID = nil
+            HoverPreview.shared.cancelPending()
+            return
+        }
+        let hovered = line.items.first { item in line.hitRects[item.id]?.contains(flipped) == true }
+        if let item = hovered, hoveredCardID != item.id, let rect = line.hitRects[item.id] {
+            hoveredCardID = item.id
+            let anchor = panel.convertToScreen(CGRect(x: rect.minX, y: panel.frame.height - rect.maxY, width: rect.width, height: rect.height))
+            HoverPreview.shared.schedule(item: item, line: line, anchor: anchor)
+        } else if hovered == nil && hoveredCardID != nil {
+            hoveredCardID = nil
+            if !HoverPreview.shared.contains(mouse) { HoverPreview.shared.scheduleClose() }
+        }
     }
 
     private func updateCapacity() {
@@ -506,11 +537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.submenu = submenu
             menu.addItem(item)
         }
-        if line.currentFolder != nil {
-            let item = NSMenuItem(title: "排序", action: nil, keyEquivalent: "")
-            item.submenu = sortMenu()
-            menu.addItem(item)
-        } else if line.isClipboard {
+        if line.isClipboard {
             menu.addItem(ClosureMenuItem("清空剪贴板历史（保留原件）") { [weak self] in self?.line.clear() })
         }
         menu.addItem(.separator())

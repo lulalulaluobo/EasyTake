@@ -57,6 +57,7 @@ struct LineView: View {
     @ObservedObject var line: Line
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let toolbarID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    private let emptyActionID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
 
     var body: some View {
         GeometryReader { geo in
@@ -65,8 +66,17 @@ struct LineView: View {
                 Rope(width: width)
 
                 if line.items.isEmpty {
-                    Hint(message: line.loading ? "正在读取目录…" : line.filter != nil ? "此类型暂无项目，可选择全部或切换来源" : line.isRecent ? "暂无最近访问，可先添加目录或打开文件" : line.isClipboard ? "截图会挂在这里，也可开启剪贴板记录" : "这个目录暂时没有可显示的项目")
-                        .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 34)
+                    VStack(spacing: 10) {
+                        Hint(message: line.loading ? "正在读取目录…" : line.filter != nil ? "此类型暂无项目，可选择全部或切换来源" : line.isRecent ? "最近访问暂无文件，可重试或切换来源" : line.isClipboard ? line.clipboardRecording ? "记录已开启，下一次复制文本、文件或截图会挂在这里" : "剪贴板记录已关闭，PinPix/PixPin 等第三方截图尚未接收" : "这个目录暂时没有可显示的项目")
+                        if line.isClipboard && !line.clipboardRecording {
+                            Button("开启剪贴板记录", action: line.onToggleClipboard)
+                                .buttonStyle(.borderedProminent).tint(.orange)
+                                .background(GeometryReader { geometry in
+                                    Color.clear.preference(key: HitRectsKey.self, value: [emptyActionID: geometry.frame(in: .global)])
+                                })
+                        }
+                    }
+                        .position(x: width / 2, y: Layout.ropeY(x: width / 2, width: width) + 50)
                         .transition(.opacity)
                 }
 

@@ -7,16 +7,19 @@ struct RecentFileRecord: Codable {
     var bookmark: Data?
 }
 
-/// System results are restricted to explicitly added folder scopes and use LastUsedDate only.
+/// Uses the user's home scope plus explicitly added folders, matching system LastUsedDate semantics.
 @MainActor
 final class RecentFiles {
     private let defaults: UserDefaults
     private(set) var records: [RecentFileRecord]
+    private(set) var indexedResultCount = 0
     private var query: NSMetadataQuery?
     private var observers: [NSObjectProtocol] = []
     private var accesses: [FolderAccess] = []
+    private var localAccesses: [FolderAccess] = []
     private var generation = UUID()
     private var scopesFailed = false
+    private var gathering = false
     private var onUpdate: (([RecentFileRecord], String?) -> Void)?
 
     init(defaults: UserDefaults) {
@@ -30,7 +33,7 @@ final class RecentFiles {
         records = Self.merge(records, [entry], filter: nil, limit: 200)
         persist()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let bookmark = try? item.url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try? item.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             DispatchQueue.main.async {
                 guard let self, let index = self.records.firstIndex(where: { $0.url == item.url && $0.usedAt == date }) else { return }
                 self.records[index].bookmark = bookmark
@@ -59,39 +62,53 @@ final class RecentFiles {
     func start(sources: [FolderSource], systemEnabled: Bool, filter: FileKind?, onUpdate: @escaping ([RecentFileRecord], String?) -> Void) {
         stop()
         self.onUpdate = onUpdate
-        onUpdate(Self.merge(records, [], filter: filter), systemEnabled ? "正在查询已授权目录的系统最近访问记录…" : "仅显示随取自身的使用记录。")
-        guard systemEnabled else { return }
-        guard !sources.isEmpty else {
-            onUpdate(Self.merge(records, [], filter: filter), "尚无已授权目录；添加文件夹来源后可查询其系统最近访问记录。目前显示随取自身记录。")
-            return
-        }
+        gathering = systemEnabled
+        onUpdate(Self.merge(records, [], filter: filter), systemEnabled ? "正在读取系统最近访问记录…" : "仅显示随取自身的使用记录。")
         let request = generation
+        let localRecords = records
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var access: [FolderAccess] = []
-            for source in sources {
+            var localAccess: [FolderAccess] = []
+            var resolved: [RecentFileRecord] = []
+            for record in localRecords {
+                var record = record
+                if let bookmark = record.bookmark {
+                    if let (url, stale) = try? FileBookmark.resolve(bookmark) {
+                        localAccess.append(FolderAccess(url))
+                        record = RecentFileRecord(url: url, usedAt: record.usedAt, kind: record.kind,
+                            bookmark: stale ? try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) : bookmark)
+                    }
+                }
+                resolved.append(record)
+            }
+            for source in sources where systemEnabled {
                 if let (url, _) = try? source.resolve() { access.append(FolderAccess(url)) }
             }
             DispatchQueue.main.async {
                 guard let self, self.generation == request else { return }
                 self.accesses = access
+                self.localAccesses = localAccess
+                self.records = resolved
+                self.persist()
+                guard systemEnabled else {
+                    self.onUpdate?(Self.merge(resolved, [], filter: filter), "仅显示随取自身的使用记录。")
+                    return
+                }
                 self.scopesFailed = access.count != sources.count
                 self.startQuery(filter: filter)
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let self, self.generation == request, self.query?.isGathering != false else { return }
+            guard let self, self.generation == request, self.gathering else { return }
             self.onUpdate?(Self.merge(self.records, [], filter: filter), "系统最近访问查询超时；可重试，目前显示随取自身记录。")
+            self.generation = UUID()
             self.stopQuery()
         }
     }
 
     private func startQuery(filter: FileKind?) {
-        guard !accesses.isEmpty else {
-            onUpdate?(Self.merge(records, [], filter: filter), "已授权目录暂不可用；可重新授权，目前显示随取自身记录。")
-            return
-        }
         let query = NSMetadataQuery()
-        query.searchScopes = accesses.map { $0.url.path }
+        query.searchScopes = [NSMetadataQueryUserHomeScope] + accesses.map { $0.url.path }
         query.predicate = NSPredicate(format: "kMDItemLastUsedDate > %@", Date(timeIntervalSince1970: 0) as NSDate)
         query.sortDescriptors = [NSSortDescriptor(key: "kMDItemLastUsedDate", ascending: false)]
         query.notificationBatchingInterval = 0.5
@@ -102,27 +119,34 @@ final class RecentFiles {
         }
         self.query = query
         if !query.start() {
+            gathering = false
             onUpdate?(Self.merge(records, [], filter: filter), "系统索引不可用，目前显示随取自身记录。")
         }
     }
 
     private func readResults(filter: FileKind?) {
         guard let query else { return }
+        if !query.isGathering { gathering = false }
         query.disableUpdates()
+        indexedResultCount = query.resultCount
         var system: [RecentFileRecord] = []
         let count = min(query.resultCount, 500)
         for index in 0..<count {
-            guard let path = query.value(ofAttribute: "kMDItemPath", forResultAt: index) as? String,
-                  let date = query.value(ofAttribute: "kMDItemLastUsedDate", forResultAt: index) as? Date else { continue }
-            let contentType = query.value(ofAttribute: "kMDItemContentType", forResultAt: index) as? String
+            guard let item = query.result(at: index) as? NSMetadataItem,
+                  let path = item.value(forAttribute: "kMDItemPath") as? String,
+                  let date = item.value(forAttribute: "kMDItemLastUsedDate") as? Date else { continue }
+            let contentType = item.value(forAttribute: "kMDItemContentType") as? String
             let url = URL(fileURLWithPath: path)
+            let typeTree = item.value(forAttribute: "kMDItemContentTypeTree") as? [String] ?? []
+            guard contentType != "public.folder", !typeTree.contains("com.apple.application"),
+                  !url.pathComponents.contains(where: { $0.hasPrefix(".") }) else { continue }
             let kind = FileKind.identify(url, isDirectory: contentType == "public.folder")
             system.append(RecentFileRecord(url: url, usedAt: date, kind: kind))
         }
         query.enableUpdates()
-        let status = scopesFailed ? "部分目录不可用；显示可读取的系统记录及随取自身记录。"
-            : system.isEmpty ? "已授权目录暂无系统最近访问结果；可能尚未索引，目前显示随取自身记录。"
-            : "系统记录仅限已授权目录，可能存在索引延迟。"
+        let status = scopesFailed ? "部分自定义目录不可用；仍显示个人文件范围的系统记录及随取自身记录。"
+            : system.isEmpty ? "系统暂无可读取的最近访问记录；可能尚未索引或受权限限制。目前显示随取自身记录。"
+            : "系统最近访问可能存在索引延迟，按实际使用时间排序。"
         onUpdate?(Self.merge(records, system, filter: filter), status)
     }
 
@@ -131,9 +155,11 @@ final class RecentFiles {
         stopQuery()
         onUpdate = nil
         accesses = []
+        localAccesses = []
     }
 
     private func stopQuery() {
+        gathering = false
         query?.stop()
         query = nil
         observers.forEach(NotificationCenter.default.removeObserver)

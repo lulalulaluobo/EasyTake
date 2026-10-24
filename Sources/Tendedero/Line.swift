@@ -15,14 +15,14 @@ struct Pegged: Identifiable, Equatable {
     let isPlaceholder: Bool
     let text: String?
     let ownedAsset: Bool
-    let tilt = Double.random(in: -2.5...2.5)
+    let tilt: Double
     var falling = false
     var flying = false
     var isRecording: Bool { kind == .video }
 
     init(url: URL, thumb: NSImage? = nil, id: UUID = UUID(), kind: FileKind? = nil,
          sourceID: UUID? = nil, modified: Date? = nil, isPlaceholder: Bool = false,
-         text: String? = nil, ownedAsset: Bool = false) {
+         text: String? = nil, ownedAsset: Bool = false, tilt: Double = .random(in: -2.5...2.5)) {
         self.id = id
         self.url = url
         self.kind = kind ?? FileKind.identify(url)
@@ -32,10 +32,11 @@ struct Pegged: Identifiable, Equatable {
         self.isPlaceholder = isPlaceholder
         self.text = text
         self.ownedAsset = ownedAsset
+        self.tilt = tilt
     }
 
     static func == (a: Pegged, b: Pegged) -> Bool {
-        a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.thumb === b.thumb
+        a.id == b.id && a.modified == b.modified && a.falling == b.falling && a.flying == b.flying && a.thumb === b.thumb
     }
 }
 
@@ -56,18 +57,19 @@ final class Line: ObservableObject {
     @Published var cardSize = Layout.size
     @Published private(set) var filter: FileKind?
     @Published private(set) var recordingMessage: String?
+    @Published var clipboardRecording = ClipboardWatcher.isEnabled
 
     var hitRects: [UUID: CGRect] = [:]
     var visibleCount = 8
     var choosingFolder = false
     var onFall: ((Pegged) -> Void)?
     var onSourcesMenu: () -> Void = {}
-    var onSortMenu: () -> Void = {}
     var onSizeMenu: () -> Void = {}
     var onSettingsMenu: () -> Void = {}
     var onAddFolder: () -> Void = {}
     var onDropFolder: (URL) -> Void = { _ in }
     var onHide: () -> Void = {}
+    var onToggleClipboard: () -> Void = {}
 
     var currentFolder: FolderSource? { folders.first { $0.id == sourceID } }
     var isRecent: Bool { sourceID == Self.recentID }
@@ -185,20 +187,14 @@ final class Line: ObservableObject {
     private func publishCandidates() {
         guard draggingID == nil else { return }
         let previous = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        items = candidates.filter { filter == nil || $0.kind == filter }.map { candidate in
+        let next = candidates.filter { filter == nil || $0.kind == filter }.map { candidate in
             var candidate = candidate
             if let old = previous[candidate.id], old.modified == candidate.modified { candidate.thumb = old.thumb }
             return candidate
         }
+        if items != next { items = next }
         let most = CGFloat(max(0, items.count - visibleCount)) * Layout.spacing
         scroll = min(scroll, most)
-    }
-
-    func setSort(_ sort: FolderSort) {
-        guard draggingID == nil, let index = folders.firstIndex(where: { $0.id == sourceID }) else { return }
-        folders[index].sort = sort
-        saveSources()
-        refreshSource()
     }
 
     func setVisible(_ visible: Bool) {
@@ -279,7 +275,7 @@ final class Line: ObservableObject {
             let prior = old[entry.url]
             return Pegged(url: entry.url, thumb: prior?.modified == entry.modified ? prior?.thumb : nil,
                 id: prior?.id ?? UUID(), kind: entry.kind, sourceID: source.id,
-                modified: entry.modified, isPlaceholder: entry.isPlaceholder)
+                modified: entry.modified, isPlaceholder: entry.isPlaceholder, tilt: prior?.tilt ?? .random(in: -2.5...2.5))
         }
         publishCandidates()
         if snapshot.limited {
@@ -303,7 +299,7 @@ final class Line: ObservableObject {
                 }
             }
         }
-        reloadThumbnails()
+        if items.contains(where: { old[$0.url]?.modified != $0.modified || old[$0.url] == nil }) { reloadThumbnails() }
     }
 
     private func scheduleRefresh() {
